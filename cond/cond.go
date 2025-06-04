@@ -2,6 +2,8 @@
 
 package cond
 
+import "container/list"
+
 // A Locker represents an object that can be locked and unlocked.
 type Locker interface {
 	Lock()
@@ -16,12 +18,18 @@ type Locker interface {
 // which must be held when changing the condition and
 // when calling the Wait method.
 type Cond struct {
-	L Locker
+	L         Locker
+	waiting   *list.List
+	waitingMx chan struct{}
 }
 
 // New returns a new Cond with Locker l.
 func New(l Locker) *Cond {
-	return &Cond{L: l}
+	return &Cond{
+		L:         l,
+		waiting:   list.New(),
+		waitingMx: make(chan struct{}, 1),
+	}
 }
 
 // Wait atomically unlocks c.L and suspends execution
@@ -33,15 +41,19 @@ func New(l Locker) *Cond {
 // typically cannot assume that the condition is true when
 // Wait returns. Instead, the caller should Wait in a loop:
 //
-//    c.L.Lock()
-//    for !condition() {
-//        c.Wait()
-//    }
-//    ... make use of condition ...
-//    c.L.Unlock()
-//
+//	c.L.Lock()
+//	for !condition() {
+//	    c.Wait()
+//	}
+//	... make use of condition ...
+//	c.L.Unlock()
 func (c *Cond) Wait() {
-
+	c.waitingMx <- struct{}{}
+	e := c.waiting.PushBack(make(chan struct{}))
+	<-c.waitingMx
+	c.L.Unlock()
+	<-e.Value.(chan struct{})
+	c.L.Lock()
 }
 
 // Signal wakes one goroutine waiting on c, if there is any.
@@ -49,7 +61,14 @@ func (c *Cond) Wait() {
 // It is allowed but not required for the caller to hold c.L
 // during the call.
 func (c *Cond) Signal() {
-
+	c.waitingMx <- struct{}{}
+	defer func() { <-c.waitingMx }()
+	e := c.waiting.Front()
+	if e == nil {
+		return
+	}
+	c.waiting.Remove(e)
+	e.Value.(chan struct{}) <- struct{}{}
 }
 
 // Broadcast wakes all goroutines waiting on c.
@@ -57,5 +76,14 @@ func (c *Cond) Signal() {
 // It is allowed but not required for the caller to hold c.L
 // during the call.
 func (c *Cond) Broadcast() {
-
+	toWake := make([]chan struct{}, 0)
+	c.waitingMx <- struct{}{}
+	defer func() { <-c.waitingMx }()
+	for e := c.waiting.Front(); e != nil; e = e.Next() {
+		toWake = append(toWake, e.Value.(chan struct{}))
+	}
+	c.waiting.Init()
+	for _, ch := range toWake {
+		ch <- struct{}{}
+	}
 }
