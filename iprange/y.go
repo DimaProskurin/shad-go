@@ -490,6 +490,9 @@ ipdefault:
 		ipDollar = ipS[ippt-3 : ippt+1]
 		{
 			mask := net.CIDRMask(int(ipDollar[3].num), 32)
+			if mask == nil {
+				return 1
+			}
 			min := ipDollar[1].addrRange.Min.Mask(mask)
 			maxInt := binary.BigEndian.Uint32([]byte(min)) +
 				0xffffffff -
